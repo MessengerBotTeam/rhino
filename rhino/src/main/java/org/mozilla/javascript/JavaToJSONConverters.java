@@ -51,7 +51,6 @@ public class JavaToJSONConverters {
      * <p>If unable to determine properties or if none exist, null is returned. This method can be
      * called from other converters to provide an alternate value on a returned null.
      */
-
     public static final UnaryOperator<Object> BEAN =
             value -> {
                 LinkedHashMap<String, Object> properties = new LinkedHashMap<>();
