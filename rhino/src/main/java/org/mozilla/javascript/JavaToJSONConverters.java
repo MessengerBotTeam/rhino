@@ -6,11 +6,7 @@
 
 package org.mozilla.javascript;
 
-import java.beans.BeanDescriptor;
-import java.beans.BeanInfo;
-import java.beans.IntrospectionException;
-import java.beans.Introspector;
-import java.beans.PropertyDescriptor;
+import java.lang.reflect.Method;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.function.UnaryOperator;
@@ -55,32 +51,41 @@ public class JavaToJSONConverters {
      * <p>If unable to determine properties or if none exist, null is returned. This method can be
      * called from other converters to provide an alternate value on a returned null.
      */
+
     public static final UnaryOperator<Object> BEAN =
             value -> {
-                BeanInfo beanInfo;
-                try {
-                    beanInfo = Introspector.getBeanInfo(value.getClass(), Object.class);
-                } catch (IntrospectionException e) {
-                    return null;
-                }
                 LinkedHashMap<String, Object> properties = new LinkedHashMap<>();
-                for (PropertyDescriptor descriptor : beanInfo.getPropertyDescriptors()) {
-                    if (descriptor.getReadMethod() == null) continue;
-                    Object propValue;
-                    try {
-                        propValue = descriptor.getReadMethod().invoke(value);
-                    } catch (Exception e) {
-                        continue;
+                Method[] methods = value.getClass().getMethods();
+                for (Method method : methods) {
+                    if (isGetter(method)) {
+                        String propertyName = getPropertyName(method);
+                        Object propValue;
+                        try {
+                            propValue = method.invoke(value);
+                        } catch (Exception e) {
+                            continue;
+                        }
+                        properties.put(propertyName, propValue);
                     }
-                    properties.put(descriptor.getName(), propValue);
                 }
 
-                if (properties.size() == 0) return null;
+                if (properties.isEmpty()) return null;
 
                 LinkedHashMap<String, Object> obj = new LinkedHashMap<>();
-                BeanDescriptor beanDescriptor = beanInfo.getBeanDescriptor();
-                obj.put("beanClass", beanDescriptor.getBeanClass().getName());
+                obj.put("beanClass", value.getClass().getName());
                 obj.put("properties", properties);
                 return obj;
             };
+
+    private static boolean isGetter(Method method) {
+        if (!method.getName().startsWith("get")) return false;
+        if (method.getParameterTypes().length != 0) return false;
+        if (void.class.equals(method.getReturnType())) return false;
+        return true;
+    }
+
+    private static String getPropertyName(Method method) {
+        String name = method.getName().substring(3);
+        return Character.toLowerCase(name.charAt(0)) + name.substring(1);
+    }
 }
