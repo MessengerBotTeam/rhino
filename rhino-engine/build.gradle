@@ -10,7 +10,7 @@ publishing {
     repositories {
         maven {
             name = "rhino-engine"
-            url = uri("https://maven.pkg.github.com/MessengerBotTeam/registry")
+            url = uri("https://maven.pkg.github.com/MessengerBotTeam/rhino")
             credentials {
                 username = project.findProperty("gpr.user") ?: System.getenv("USERNAME")
                 password = project.findProperty("gpr.key") ?: System.getenv("TOKEN")
