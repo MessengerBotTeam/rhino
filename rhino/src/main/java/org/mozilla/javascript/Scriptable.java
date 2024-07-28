@@ -48,18 +48,6 @@ public interface Scriptable {
      * <p>Depending on the property selector, the runtime will call this method or the form of
      * <code>get</code> that takes an integer:
      *
-     * <table>
-     * <tr><th>JavaScript code</th><th>Java code</th></tr>
-     * <tr><td>a.b      </td><td>a.get("b", a)</td></tr>
-     * <tr><td>a["foo"] </td><td>a.get("foo", a)</td></tr>
-     * <tr><td>a[3]     </td><td>a.get(3, a)</td></tr>
-     * <tr><td>a["3"]   </td><td>a.get(3, a)</td></tr>
-     * <tr><td>a[3.0]   </td><td>a.get(3, a)</td></tr>
-     * <tr><td>a["3.0"] </td><td>a.get("3.0", a)</td></tr>
-     * <tr><td>a[1.1]   </td><td>a.get("1.1", a)</td></tr>
-     * <tr><td>a[-4]    </td><td>a.get(-4, a)</td></tr>
-     * </table>
-     *
      * <p>The values that may be returned are limited to the following:
      *
      * <UL>

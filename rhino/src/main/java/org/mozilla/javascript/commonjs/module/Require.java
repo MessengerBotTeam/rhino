@@ -21,19 +21,19 @@ import org.mozilla.javascript.ScriptableObject;
  * Implements the require() function as defined by <a
  * href="http://wiki.commonjs.org/wiki/Modules/1.1">Common JS modules</a>.
  *
- * <h1>Thread safety</h1>
+ * <b>Thread safety</b>
  *
  * You will ordinarily create one instance of require() for every top-level scope. This ordinarily
  * means one instance per program execution, except if you use shared top-level scopes and
  * installing most objects into them. Module loading is thread safe, so using a single require() in
  * a shared top-level scope is also safe.
  *
- * <h1>Creation</h1>
+ * <b>Creation</b>
  *
  * If you need to create many otherwise identical require() functions for different scopes, you
  * might want to use {@link RequireBuilder} for convenience.
  *
- * <h1>Making it available</h1>
+ * <b>Making it available</b>
  *
  * In order to make the require() function available to your JavaScript program, you need to invoke
  * either {@link #install(Scriptable)} or {@link #requireMain(Context, String)}.
