@@ -7,9 +7,11 @@
 package org.mozilla.javascript;
 
 import java.math.BigInteger;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
-import java.util.Objects;
+import java.util.Map;
 import org.mozilla.javascript.ast.AstNode;
 import org.mozilla.javascript.ast.AstRoot;
 import org.mozilla.javascript.ast.Block;
@@ -39,8 +41,8 @@ class CodeGenerator extends Icode {
     private int lineNumber;
     private int doubleTableTop;
 
-    private ObjToIntMap strings = new ObjToIntMap(20);
-    private ObjToIntMap bigInts = new ObjToIntMap(20);
+    private final HashMap<String, Integer> strings = new HashMap<>();
+    private final HashMap<BigInteger, Integer> bigInts = new HashMap<>();
     private int localTop;
     private int[] labelTable;
     private int labelTableTop;
@@ -48,7 +50,7 @@ class CodeGenerator extends Icode {
     // fixupTable[i] = (label_index << 32) | fixup_site
     private long[] fixupTable;
     private int fixupTableTop;
-    private ObjArray literalIds = new ObjArray();
+    private final ArrayList<Object> literalIds = new ArrayList<>();
 
     private int exceptionTableTop;
 
@@ -147,10 +149,9 @@ class CodeGenerator extends Icode {
             itsData.itsStringTable = null;
         } else {
             itsData.itsStringTable = new String[strings.size()];
-            ObjToIntMap.Iterator iter = strings.newIterator();
-            for (iter.start(); !iter.done(); iter.next()) {
-                String str = (String) iter.getKey();
-                int index = iter.getValue();
+            for (Map.Entry<String, Integer> e : strings.entrySet()) {
+                String str = e.getKey();
+                int index = e.getValue();
                 if (itsData.itsStringTable[index] != null) Kit.codeBug();
                 itsData.itsStringTable[index] = str;
             }
@@ -166,10 +167,9 @@ class CodeGenerator extends Icode {
             itsData.itsBigIntTable = null;
         } else {
             itsData.itsBigIntTable = new BigInteger[bigInts.size()];
-            ObjToIntMap.Iterator iter = bigInts.newIterator();
-            for (iter.start(); !iter.done(); iter.next()) {
-                BigInteger bigInt = (BigInteger) iter.getKey();
-                int index = iter.getValue();
+            for (Map.Entry<BigInteger, Integer> e : bigInts.entrySet()) {
+                BigInteger bigInt = e.getKey();
+                int index = e.getValue();
                 if (itsData.itsBigIntTable[index] != null) Kit.codeBug();
                 itsData.itsBigIntTable[index] = bigInt;
             }
@@ -1154,11 +1154,10 @@ class CodeGenerator extends Icode {
 
     private void visitObjectLiteral(Node node, Node child) {
         Object[] propertyIds = (Object[]) node.getProp(Node.OBJECT_IDS_PROP);
-        Object[] computedPropertyIds = (Object[]) node.getProp(Node.OBJECT_IDS_COMPUTED_PROP);
         int count = propertyIds == null ? 0 : propertyIds.length;
         boolean hasAnyComputedProperty =
-                computedPropertyIds != null
-                        && Arrays.stream(computedPropertyIds).anyMatch(Objects::nonNull);
+                propertyIds != null
+                        && Arrays.stream(propertyIds).anyMatch(id -> id instanceof Node);
 
         int nextLiteralIndex = literalIds.size();
         literalIds.add(propertyIds);
@@ -1171,10 +1170,10 @@ class CodeGenerator extends Icode {
         int i = 0;
         while (child != null) {
             // Computed key
-            Object computedPropertyId = computedPropertyIds == null ? null : computedPropertyIds[i];
-            if (computedPropertyId != null) {
+            Object propertyId = propertyIds == null ? null : propertyIds[i];
+            if (propertyId instanceof Node) {
                 // Will be a node of type Token.COMPUTED_PROPERTY wrapping the actual expression
-                Node computedPropertyNode = (Node) computedPropertyId;
+                Node computedPropertyNode = (Node) propertyId;
                 visitExpression(computedPropertyNode.first, 0);
                 addIndexOp(Icode_LITERAL_KEY_SET, i);
                 stackChange(-1);
@@ -1344,7 +1343,7 @@ class CodeGenerator extends Icode {
         int offsetSite = fromPC + 1;
         if (offset != (short) offset) {
             if (itsData.longJumps == null) {
-                itsData.longJumps = new UintMap();
+                itsData.longJumps = new HashMap<>();
             }
             itsData.longJumps.put(offsetSite, jumpPC);
             offset = 0;
@@ -1470,7 +1469,7 @@ class CodeGenerator extends Icode {
     }
 
     private void addStringPrefix(String str) {
-        int index = strings.get(str, -1);
+        int index = strings.getOrDefault(str, -1);
         if (index == -1) {
             index = strings.size();
             strings.put(str, index);
@@ -1490,7 +1489,7 @@ class CodeGenerator extends Icode {
     }
 
     private void addBigInt(BigInteger n) {
-        int index = bigInts.get(n, -1);
+        int index = bigInts.getOrDefault(n, -1);
         if (index == -1) {
             index = bigInts.size();
             bigInts.put(n, index);

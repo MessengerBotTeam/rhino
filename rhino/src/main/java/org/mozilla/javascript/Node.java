@@ -7,7 +7,9 @@
 package org.mozilla.javascript;
 
 import java.math.BigInteger;
+import java.util.HashMap;
 import java.util.Iterator;
+import java.util.Map;
 import java.util.NoSuchElementException;
 import org.mozilla.javascript.ast.Comment;
 import org.mozilla.javascript.ast.FunctionNode;
@@ -63,8 +65,7 @@ public class Node implements Iterable<Node> {
             ARROW_FUNCTION_PROP = 26,
             TEMPLATE_LITERAL_PROP = 27,
             TRAILING_COMMA = 28,
-            OBJECT_IDS_COMPUTED_PROP = 39,
-            LAST_PROP = 39;
+            LAST_PROP = 28;
 
     // values of ISNUMBER_PROP to specify
     // which of the children are Number types
@@ -432,8 +433,6 @@ public class Node implements Iterable<Node> {
                     return "template_literal";
                 case TRAILING_COMMA:
                     return "trailing comma";
-                case OBJECT_IDS_COMPUTED_PROP:
-                    return "object_ids_computed_prop";
 
                 default:
                     Kit.codeBug();
@@ -1030,13 +1029,13 @@ public class Node implements Iterable<Node> {
     public String toString() {
         if (Token.printTrees) {
             StringBuilder sb = new StringBuilder();
-            toString(new ObjToIntMap(), sb);
+            toString(new HashMap<>(), sb);
             return sb.toString();
         }
         return String.valueOf(type);
     }
 
-    private void toString(ObjToIntMap printIds, StringBuilder sb) {
+    private void toString(Map<Node, Integer> printIds, StringBuilder sb) {
         if (Token.printTrees) {
             sb.append(Token.name(type));
             if (this instanceof Name) {
@@ -1199,10 +1198,10 @@ public class Node implements Iterable<Node> {
     }
 
     private static void toStringTreeHelper(
-            ScriptNode treeTop, Node n, ObjToIntMap printIds, int level, StringBuilder sb) {
+            ScriptNode treeTop, Node n, Map<Node, Integer> printIds, int level, StringBuilder sb) {
         if (Token.printTrees) {
             if (printIds == null) {
-                printIds = new ObjToIntMap();
+                printIds = new HashMap<>();
                 generatePrintIds(treeTop, printIds);
             }
             for (int i = 0; i != level; ++i) {
@@ -1222,7 +1221,7 @@ public class Node implements Iterable<Node> {
         }
     }
 
-    private static void generatePrintIds(Node n, ObjToIntMap map) {
+    private static void generatePrintIds(Node n, Map<Node, Integer> map) {
         if (Token.printTrees) {
             map.put(n, map.size());
             for (Node cursor = n.getFirstChild(); cursor != null; cursor = cursor.getNext()) {
@@ -1231,10 +1230,10 @@ public class Node implements Iterable<Node> {
         }
     }
 
-    private static void appendPrintId(Node n, ObjToIntMap printIds, StringBuilder sb) {
+    private static void appendPrintId(Node n, Map<Node, Integer> printIds, StringBuilder sb) {
         if (Token.printTrees) {
             if (n != null) {
-                int id = printIds.get(n, -1);
+                int id = printIds.getOrDefault(n, -1);
                 sb.append('#');
                 if (id != -1) {
                     sb.append(id + 1);
