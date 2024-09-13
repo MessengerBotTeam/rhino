@@ -2038,6 +2038,27 @@ public final class IRFactory {
                     }
                     break;
                 }
+
+            case Token.NULLISH_COALESCING:
+                {
+                    // foo ?? default =>
+                    //     (foo == undefined || foo == null) ? foo (left) : default (right)
+
+                    Node undefinedNode = new Name(0, "undefined");
+                    Node nullNode = new Node(Token.NULL);
+
+                    Node conditional =
+                            new Node(
+                                    Token.OR,
+                                    new Node(Token.SHEQ, nullNode, left),
+                                    new Node(Token.SHEQ, undefinedNode, left));
+
+                    return new Node(
+                            Token.HOOK,
+                            /* left= */ conditional,
+                            /* mid= */ right,
+                            /* right= */ left);
+                }
         }
 
         return new Node(nodeType, left, right);
@@ -2066,11 +2087,17 @@ public final class IRFactory {
             case Token.ASSIGN_BITOR:
                 assignOp = Token.BITOR;
                 break;
+            case Token.ASSIGN_LOGICAL_OR:
+                assignOp = Token.OR;
+                break;
             case Token.ASSIGN_BITXOR:
                 assignOp = Token.BITXOR;
                 break;
             case Token.ASSIGN_BITAND:
                 assignOp = Token.BITAND;
+                break;
+            case Token.ASSIGN_LOGICAL_AND:
+                assignOp = Token.AND;
                 break;
             case Token.ASSIGN_LSH:
                 assignOp = Token.LSH;
