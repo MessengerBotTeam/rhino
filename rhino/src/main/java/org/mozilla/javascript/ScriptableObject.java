@@ -1853,7 +1853,7 @@ public abstract class ScriptableObject extends SlotMapOwner
 
     private void replaceLambdaAccessorSlot(Context cx, Object key, LambdaAccessorSlot newSlot) {
         ScriptableObject newDesc = newSlot.buildPropertyDescriptor(cx);
-               checkPropertyDefinition(newDesc);
+        checkPropertyDefinition(newDesc);
         getMap().compute(
                         this,
                         key,
