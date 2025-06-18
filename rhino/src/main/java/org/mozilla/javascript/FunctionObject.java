@@ -117,10 +117,19 @@ public class FunctionObject extends BaseFunction {
                 for (int i = 0; i != arity; ++i) {
                     int tag = getTypeTag(types[i]);
                     if (tag == JAVA_UNSUPPORTED_TYPE) {
-                        throw Context.reportRuntimeErrorById(
-                                "msg.bad.parms", types[i].getName(), methodName);
+                        if (member.vararg && i == arity - 1) {
+                            // This is the vararg parameter. getTypeTag returns
+                            // unsupported for array types. We can ignore it, as
+                            // the call method will handle it. We store
+                            // JAVA_OBJECT_TYPE as a placeholder.
+                            typeTags[i] = (byte) JAVA_OBJECT_TYPE;
+                        } else {
+                            throw Context.reportRuntimeErrorById(
+                                    "msg.bad.parms", types[i].getName(), methodName);
+                        }
+                    } else {
+                        typeTags[i] = (byte) tag;
                     }
-                    typeTags[i] = (byte) tag;
                 }
             }
         }
@@ -406,7 +415,32 @@ public class FunctionObject extends BaseFunction {
             }
 
             Object[] invokeArgs;
-            if (parmsLength == argsLength) {
+            if (member.vararg) {
+                Class<?>[] argTypes = member.argTypes;
+                int fixedArgCount = argTypes.length - 1;
+                invokeArgs = new Object[argTypes.length];
+
+                // Convert fixed arguments
+                for (int i = 0; i < fixedArgCount; i++) {
+                    Object arg = (i < argsLength) ? args[i] : Undefined.instance;
+                    invokeArgs[i] =
+                            convertArg(cx, scope, arg, typeTags[i], member.argNullability[i]);
+                }
+
+                // Collect and convert varargs
+                int varargsLength = Math.max(0, argsLength - fixedArgCount);
+                Class<?> varargElementType = argTypes[fixedArgCount].getComponentType();
+                Object varargsArray =
+                        java.lang.reflect.Array.newInstance(varargElementType, varargsLength);
+                int varargElementTag = getTypeTag(varargElementType);
+
+                for (int i = 0; i < varargsLength; i++) {
+                    Object arg = args[fixedArgCount + i];
+                    Object converted = convertArg(cx, scope, arg, varargElementTag, false);
+                    java.lang.reflect.Array.set(varargsArray, i, converted);
+                }
+                invokeArgs[fixedArgCount] = varargsArray;
+            } else if (parmsLength == argsLength) {
                 // Do not allocate new argument array if java arguments are
                 // the same as the original js ones.
                 invokeArgs = args;

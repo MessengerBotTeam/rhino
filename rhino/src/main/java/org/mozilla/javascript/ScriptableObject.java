@@ -1144,9 +1144,11 @@ public abstract class ScriptableObject extends SlotMapOwner
         }
 
         FunctionObject ctor = new FunctionObject(className, ctorMember, scope);
+        /*
         if (ctor.isVarArgsMethod()) {
             throw Context.reportRuntimeErrorById("msg.varargs.ctor", ctorMember.getName());
         }
+        */
         ctor.initAsConstructor(
                 scope,
                 proto,
@@ -1231,9 +1233,11 @@ public abstract class ScriptableObject extends SlotMapOwner
             }
 
             FunctionObject f = new FunctionObject(name, method, proto);
+            /*
             if (f.isVarArgsConstructor()) {
                 throw Context.reportRuntimeErrorById("msg.varargs.fun", ctorMember.getName());
             }
+            */
             defineProperty(isStatic ? ctor : proto, name, f, DONTENUM);
             if (sealed) {
                 f.sealObject();
@@ -1849,7 +1853,7 @@ public abstract class ScriptableObject extends SlotMapOwner
 
     private void replaceLambdaAccessorSlot(Context cx, Object key, LambdaAccessorSlot newSlot) {
         ScriptableObject newDesc = newSlot.buildPropertyDescriptor(cx);
-        checkPropertyDefinition(newDesc);
+               checkPropertyDefinition(newDesc);
         getMap().compute(
                         this,
                         key,
