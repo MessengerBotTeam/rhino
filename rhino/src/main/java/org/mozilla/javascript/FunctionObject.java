@@ -15,7 +15,6 @@ import java.lang.reflect.Member;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.List;
-
 import org.mozilla.javascript.commonjs.module.ModuleScope;
 import org.mozilla.javascript.lc.type.TypeInfo;
 import org.mozilla.javascript.lc.type.TypeInfoFactory;
@@ -437,7 +436,8 @@ public class FunctionObject extends BaseFunction {
                 int varargsLength = Math.max(0, argsLength - fixedArgCount);
                 TypeInfo varargElementType = argTypes.get(fixedArgCount).getComponentType();
                 Object varargsArray =
-                        java.lang.reflect.Array.newInstance(varargElementType.asClass(), varargsLength);
+                        java.lang.reflect.Array.newInstance(
+                                varargElementType.asClass(), varargsLength);
                 int varargElementTag = varargElementType.getTypeTag();
 
                 for (int i = 0; i < varargsLength; i++) {
