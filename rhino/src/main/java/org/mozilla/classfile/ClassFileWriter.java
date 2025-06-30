@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import org.mozilla.javascript.Kit;
+import org.mozilla.javascript.util.OS;
 
 /**
  * ClassFileWriter
@@ -837,7 +838,7 @@ public class ClassFileWriter {
             System.out.println("Add invokedynamic, " + methodName + ", " + methodType);
         }
         // JDK 1.7 major class file version is required for invokedynamic
-        if (MajorVersion < 51) {
+        if (MajorVersion < 51 && !OS.isAndroidRuntime) {
             throw new RuntimeException(
                     "Please build and run with JDK 1.7 for invokedynamic support");
         }
