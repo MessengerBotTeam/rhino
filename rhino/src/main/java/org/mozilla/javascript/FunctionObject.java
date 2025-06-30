@@ -122,11 +122,9 @@ public class FunctionObject extends BaseFunction {
                 for (int i = 0; i != arity; ++i) {
                     int tag = types.get(i).getTypeTag();
                     if (tag == JAVA_UNSUPPORTED_TYPE) {
-                        if (member.vararg && i != arity - 1) {
+                        if (member.vararg && i == arity - 1) {
                             // This is the vararg parameter. getTypeTag returns
-                            // unsupported for array types. We can ignore it, as
-                            // the call method will handle it. We store
-                            // JAVA_OBJECT_TYPE as a placeholder.
+                            // unsupported for array types. We store JAVA_OBJECT_TYPE as a placeholder.
                             typeTags[i] = (byte) JAVA_OBJECT_TYPE;
                         } else {
                             throw Context.reportRuntimeErrorById(
