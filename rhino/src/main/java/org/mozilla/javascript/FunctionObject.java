@@ -429,7 +429,8 @@ public class FunctionObject extends BaseFunction {
                 for (int i = 0; i < fixedArgCount; i++) {
                     Object arg = (i < argsLength) ? args[i] : Undefined.instance;
                     invokeArgs[i] =
-                            convertArg(cx, scope, arg, typeTags[i], member.argNullability[i]);
+                        convertArg(
+                            cx, scope, arg, typeTags[i], member.getArgNullability().isNullable(i));
                 }
 
                 // Collect and convert varargs
