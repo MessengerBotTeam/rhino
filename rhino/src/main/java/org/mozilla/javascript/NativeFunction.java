@@ -18,14 +18,19 @@ public abstract class NativeFunction extends BaseFunction {
 
     private static final long serialVersionUID = 8713897114082216401L;
 
+    private boolean isShorthand;
+
     public final void initScriptFunction(Context cx, Scriptable scope) {
-        initScriptFunction(cx, scope, isGeneratorFunction());
+        initScriptFunction(cx, scope, isGeneratorFunction(), isShorthand());
     }
 
     public final void initScriptFunction(
-            Context cx, Scriptable scope, boolean es6GeneratorFunction) {
+            Context cx, Scriptable scope, boolean es6GeneratorFunction, boolean isShorthand) {
         ScriptRuntime.setFunctionProtoAndParent(this, cx, scope, es6GeneratorFunction);
-        setupDefaultPrototype(scope);
+        if (!isShorthand) { // Methods don't have the prototype property!
+            setupDefaultPrototype(scope);
+        }
+        this.isShorthand = isShorthand;
     }
 
     /**
@@ -120,4 +125,8 @@ public abstract class NativeFunction extends BaseFunction {
     }
 
     public abstract boolean isStrict();
+
+    public boolean isShorthand() {
+        return isShorthand;
+    }
 }

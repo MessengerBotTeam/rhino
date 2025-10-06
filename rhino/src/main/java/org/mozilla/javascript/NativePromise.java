@@ -49,6 +49,15 @@ public class NativePromise extends ScriptableObject {
                 scope, "race", 1, NativePromise::race, DONTENUM, DONTENUM | READONLY);
         constructor.defineConstructorMethod(
                 scope, "any", 1, NativePromise::any, DONTENUM, DONTENUM | READONLY);
+        constructor.defineConstructorMethod(
+                scope,
+                "withResolvers",
+                0,
+                NativePromise::withResolvers,
+                DONTENUM,
+                DONTENUM | READONLY);
+        constructor.defineConstructorMethod(
+                scope, "try", 1, NativePromise::promiseTry, DONTENUM, DONTENUM | READONLY);
 
         ScriptRuntimeES6.addSymbolSpecies(cx, scope, constructor);
 
@@ -78,6 +87,7 @@ public class NativePromise extends ScriptableObject {
                 SymbolKey.TO_STRING_TAG, "Promise", DONTENUM | READONLY);
         if (sealed) {
             constructor.sealObject();
+            ((ScriptableObject) constructor.getPrototypeProperty()).sealObject();
         }
         return constructor;
     }
@@ -310,6 +320,63 @@ public class NativePromise extends ScriptableObject {
                     new Object[] {getErrorObject(cx, scope, re)});
             return cap.promise;
         }
+    }
+
+    // Promise.withResolvers
+    private static Object withResolvers(
+            Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
+        if (!ScriptRuntime.isObject(thisObj)) {
+            throw ScriptRuntime.typeErrorById("msg.arg.not.object", ScriptRuntime.typeof(thisObj));
+        }
+
+        // Create a capability which properly constructs a promise with resolve/reject functions
+        Capability cap = new Capability(cx, scope, thisObj);
+
+        // Create the result object with promise, resolve, and reject properties
+        Scriptable result = cx.newObject(scope);
+        result.put("promise", result, cap.promise);
+        result.put("resolve", result, cap.resolve);
+        result.put("reject", result, cap.reject);
+
+        return result;
+    }
+
+    // Promise.try
+    private static Object promiseTry(
+            Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
+        if (!ScriptRuntime.isObject(thisObj)) {
+            throw ScriptRuntime.typeErrorById("msg.arg.not.object", ScriptRuntime.typeof(thisObj));
+        }
+
+        if (args.length < 1 || !(args[0] instanceof Callable)) {
+            throw ScriptRuntime.typeErrorById("msg.function.expected");
+        }
+
+        Callable func = (Callable) args[0];
+
+        // Create a new promise capability using the constructor
+        Capability cap = new Capability(cx, scope, thisObj);
+
+        // Prepare the arguments to pass to the function (all args after the function)
+        Object[] funcArgs = new Object[args.length - 1];
+        System.arraycopy(args, 1, funcArgs, 0, funcArgs.length);
+
+        try {
+            // Call the function synchronously
+            Object result = func.call(cx, scope, Undefined.SCRIPTABLE_UNDEFINED, funcArgs);
+
+            // Resolve the promise with the result
+            cap.resolve.call(cx, scope, Undefined.SCRIPTABLE_UNDEFINED, new Object[] {result});
+        } catch (RhinoException re) {
+            // If the function throws, reject the promise with the error
+            cap.reject.call(
+                    cx,
+                    scope,
+                    Undefined.SCRIPTABLE_UNDEFINED,
+                    new Object[] {getErrorObject(cx, scope, re)});
+        }
+
+        return cap.promise;
     }
 
     // Promise.prototype.then

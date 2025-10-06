@@ -86,7 +86,8 @@ public class Token {
             NUMBER = NAME + 1,
             STRING = NUMBER + 1,
             NULL = STRING + 1,
-            THIS = NULL + 1,
+            UNDEFINED = NULL + 1,
+            THIS = UNDEFINED + 1,
             FALSE = THIS + 1,
             TRUE = FALSE + 1,
             SHEQ = TRUE + 1, // shallow equality (===)
@@ -119,7 +120,9 @@ public class Token {
             YIELD = REF_SPECIAL + 1, // JS 1.7 yield pseudo keyword
             SUPER = YIELD + 1, // ES6 super keyword
             STRICT_SETNAME = SUPER + 1,
-            EXP = STRICT_SETNAME + 1, // Exponentiation Operator
+            STRING_CONCAT =
+                    STRICT_SETNAME + 1, // string concatenation with toString first semantics
+            EXP = STRING_CONCAT + 1, // Exponentiation Operator
 
             // For XML support:
             DEFAULTNAMESPACE = EXP + 1, // default xml namespace =
@@ -365,6 +368,8 @@ public class Token {
                 return "STRING";
             case NULL:
                 return "NULL";
+            case UNDEFINED:
+                return "UNDEFINED";
             case THIS:
                 return "THIS";
             case FALSE:
@@ -631,6 +636,8 @@ public class Token {
                 return "BIGINT";
             case TEMPLATE_LITERAL:
                 return "TEMPLATE_LITERAL";
+            case STRING_CONCAT:
+                return "STRING_CONCAT";
             case TEMPLATE_CHARS:
                 return "TEMPLATE_CHARS";
             case TEMPLATE_LITERAL_SUBST:
@@ -696,6 +703,8 @@ public class Token {
                 return "true";
             case Token.TYPEOF:
                 return "typeof";
+            case Token.UNDEFINED:
+                return "undefined";
             case Token.VAR:
                 return "var";
             case Token.VOID:

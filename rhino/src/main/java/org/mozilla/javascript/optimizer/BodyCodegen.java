@@ -1161,6 +1161,10 @@ class BodyCodegen {
                 cfw.add(ByteCode.ACONST_NULL);
                 break;
 
+            case Token.UNDEFINED:
+                Codegen.pushUndefined(cfw);
+                break;
+
             case Token.TRUE:
                 cfw.add(ByteCode.GETSTATIC, "java/lang/Boolean", "TRUE", "Ljava/lang/Boolean;");
                 break;
@@ -1339,6 +1343,13 @@ class BodyCodegen {
                 }
                 break;
 
+            case Token.STRING_CONCAT:
+                generateExpression(child, node);
+                generateExpression(child.getNext(), node);
+                addScriptRuntimeInvoke(
+                        "concat", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;");
+                break;
+
             case Token.SUB:
             case Token.MUL:
             case Token.DIV:
@@ -1450,11 +1461,7 @@ class BodyCodegen {
                     cfw.add(ByteCode.IFEQ, getElem);
 
                     cfw.add(ByteCode.POP);
-                    cfw.add(
-                            ByteCode.GETSTATIC,
-                            "org/mozilla/javascript/Undefined",
-                            "instance",
-                            "Ljava/lang/Object;");
+                    Codegen.pushUndefined(cfw);
                     cfw.add(ByteCode.GOTO, after);
 
                     cfw.markLabel(getElem);
@@ -1615,11 +1622,7 @@ class BodyCodegen {
                         cfw.add(ByteCode.IFEQ, getExpr);
 
                         cfw.add(ByteCode.POP);
-                        cfw.add(
-                                ByteCode.GETSTATIC,
-                                "org/mozilla/javascript/Undefined",
-                                "instance",
-                                "Ljava/lang/Object;");
+                        Codegen.pushUndefined(cfw);
                         cfw.add(ByteCode.GOTO, after);
 
                         cfw.markLabel(getExpr);
@@ -2251,75 +2254,133 @@ class BodyCodegen {
 
     /** load two arrays with property ids and values */
     private void addLoadProperty(Node node, Node child, Object[] properties, int count) {
+        cfw.addALoad(contextLocal);
+        cfw.addLoadConstant(count - node.getIntProp(Node.NUMBER_OF_SPREAD, 0));
+        cfw.addLoadConstant(1);
+        cfw.addInvoke(
+                ByteCode.INVOKESTATIC,
+                "org/mozilla/javascript/NewLiteralStorage",
+                "create",
+                "(Lorg/mozilla/javascript/Context;IZ)Lorg/mozilla/javascript/NewLiteralStorage;");
+
         if (count == 0) {
-            addNewObjectArray(0);
-            addNewObjectArray(0);
             return;
         }
 
         if (isGenerator) {
-            // More inefficient code (uses a lot of stack size), but necessary for bug 757410.
-            // First push all keys and values, interleaved. Then pop them onto two arrays.
-            // The code could be implemented without two additional locals, but it would be a mess
-            // of dup2_x2, swap, and pop... this looks a bit cleaner.
+            // Slightly more inefficient code, but necessary for bug 757410.
+            // The problem is that, when we have a yield in a key or value,
+            // we might actually suspend the function and resume it later.
+            // To do that, we store all the stack's entries in
+            // OptRuntime::GeneratorState::stackState, which is an Object[].
+            // The class verifier would complain if we had a NewLiteralStorage
+            // on the stack, and thus we add the various CHECKCAST to "trick"
+            // the class verifier into thinking that we have only Object
+            // instances. Also, we first push the key, _then_ the NewNativeStorage,
+            // and then do a checkcast/swap/set value dance. It's slightly slower
+            // than the base case, which is why we separated the two code paths.
+
+            cfw.add(ByteCode.CHECKCAST, "java/lang/Object");
+            short local = getNewWordLocal();
+            cfw.addAStore(local);
 
             for (int i = 0; i < count; ++i) {
-                addLoadPropertyId(node, properties, i);
-                addLoadPropertyValue(node, child);
+                if (child.getType() == Token.DOTDOTDOT) {
+                    cfw.addALoad(contextLocal); // stack: [context]
+                    cfw.addALoad(variableObjectLocal); // stack: [context, scope]
+                    generateExpression(
+                            child.getFirstChild(), node); // stack: [context, scope, sourceObj]
+                    cfw.addALoad(local); // stack: [context, scope, sourceObj, store]
+                    cfw.add(ByteCode.CHECKCAST, "org/mozilla/javascript/NewLiteralStorage");
+                    cfw.add(ByteCode.SWAP); // stack: [context, scope, store, sourceObj]
+                    addOptRuntimeInvoke(
+                            "spread",
+                            "(Lorg/mozilla/javascript/Context;"
+                                    + "Lorg/mozilla/javascript/Scriptable;"
+                                    + "Lorg/mozilla/javascript/NewLiteralStorage;"
+                                    + "Ljava/lang/Object;"
+                                    + ")V"); // stack: []
+                } else {
+                    addLoadPropertyId(node, properties, i); // stack: [ki]
+                    cfw.addALoad(local); // stack: [ki, store]
+                    cfw.add(ByteCode.CHECKCAST, "org/mozilla/javascript/NewLiteralStorage");
+                    cfw.add(ByteCode.SWAP); // stack: [store, ki]
+                    cfw.addInvoke(
+                            ByteCode.INVOKEVIRTUAL,
+                            "org/mozilla/javascript/NewLiteralStorage",
+                            "pushKey",
+                            "(Ljava/lang/Object;)V"); // stack: []
+
+                    addLoadPropertyValue(node, child);
+                    cfw.addALoad(local);
+                    cfw.add(ByteCode.CHECKCAST, "org/mozilla/javascript/NewLiteralStorage");
+                    cfw.add(ByteCode.SWAP);
+                    String methodName = getStoreMethodNameForLiteralProperty(child);
+                    cfw.addInvoke(
+                            ByteCode.INVOKEVIRTUAL,
+                            "org/mozilla/javascript/NewLiteralStorage",
+                            methodName,
+                            "(Ljava/lang/Object;)V"); // Stack: [store]
+                }
+
                 child = child.getNext();
             }
 
-            int keysArrayLocal = firstFreeLocal;
-            ++firstFreeLocal;
-            ++localsMax;
-            int valuesArrayLocal = firstFreeLocal;
-            ++firstFreeLocal;
-            ++localsMax;
-            addNewObjectArray(count);
-            cfw.addAStore(keysArrayLocal);
-            addNewObjectArray(count);
-            cfw.addAStore(valuesArrayLocal);
-
-            // Notice that i goes in reverse, since the stack is LIFO :)
-            for (int i = count - 1; i >= 0; --i) {
-
-                // Stack: [k0, v0, ..., ki, vi]
-                cfw.addALoad(valuesArrayLocal); // Stack: [k0, v0, ..., ki, vi, values]
-                cfw.add(ByteCode.SWAP); // Stack: [k0, v0, ..., ki, values, vi]
-                cfw.addLoadConstant(i); // Stack: [k0, v0, ..., ki, values, vi, i]
-                cfw.add(ByteCode.SWAP); // Stack: [k0, v0, ..., ki, values, i, vi]
-                cfw.add(ByteCode.AASTORE); // Stack: [k0, v0, ..., ki]
-
-                cfw.addALoad(keysArrayLocal); // Stack: [k0, v0, ..., ki, keys]
-                cfw.add(ByteCode.SWAP); // Stack: [k0, v0, ..., keys, ki]
-                cfw.addLoadConstant(i); // Stack: [k0, v0, ..., keys, ki, i]
-                cfw.add(ByteCode.SWAP); // Stack: [k0, v0, ..., keys, ki, i]
-                cfw.add(ByteCode.AASTORE); // Stack: [k0, v0, ...]
-            }
-
-            cfw.addALoad(keysArrayLocal);
-            cfw.addALoad(valuesArrayLocal);
+            cfw.addALoad(local);
+            cfw.add(ByteCode.CHECKCAST, "org/mozilla/javascript/NewLiteralStorage");
+            releaseWordLocal(local);
         } else {
-            // Simpler bytecode in the normal case (no generator, and thus no "yield" in the middle)
-
-            addNewObjectArray(count); // Stack: [values]
-            addNewObjectArray(count); // Stack: [values, keys]
-
             for (int i = 0; i < count; ++i) {
-                cfw.add(ByteCode.DUP2); // Stack: [values, keys, values, keys]
-                cfw.addLoadConstant(i); // Stack: [values, keys, values, keys, i]
-                addLoadPropertyId(
-                        node, properties, i); // Stack: [values, keys, values, keys, i, Ki]
-                cfw.add(ByteCode.AASTORE); // Stack: [values, keys, values]
+                if (child.getType() == Token.DOTDOTDOT) {
+                    cfw.add(ByteCode.DUP); // stack: [store, store]
+                    cfw.addALoad(contextLocal); // stack: [store, store, context]
+                    cfw.add(ByteCode.SWAP); // stack: [store, context, store]
+                    cfw.addALoad(variableObjectLocal); // stack: [store, context, store, scope]
+                    cfw.add(ByteCode.SWAP); // stack [store, context, scope, store]
+                    generateExpression(
+                            child.getFirstChild(),
+                            node); // stack: [store, context, scope, store, sourceObj]
+                    addOptRuntimeInvoke(
+                            "spread",
+                            "(Lorg/mozilla/javascript/Context;"
+                                    + "Lorg/mozilla/javascript/Scriptable;"
+                                    + "Lorg/mozilla/javascript/NewLiteralStorage;"
+                                    + "Ljava/lang/Object;"
+                                    + ")V"); // stack: [store]
+                } else {
+                    cfw.add(ByteCode.DUP); // Stack: [store, store]
+                    addLoadPropertyId(node, properties, i); // Stack: [store, store, Ki]
+                    cfw.addInvoke(
+                            ByteCode.INVOKEVIRTUAL,
+                            "org/mozilla/javascript/NewLiteralStorage",
+                            "pushKey",
+                            "(Ljava/lang/Object;)V"); // Stack: [store]
 
-                cfw.addLoadConstant(i); // Stack: [values, keys, values, i]
-                addLoadPropertyValue(node, child); // Stack: [values, keys, values, i, Vi]
-                cfw.add(ByteCode.AASTORE); // Stack: [values, keys]
+                    cfw.add(ByteCode.DUP); // Stack: [store, store]
+                    addLoadPropertyValue(node, child); // Stack: [store, store, Vi]
+                    String methodName = getStoreMethodNameForLiteralProperty(child);
+                    cfw.addInvoke(
+                            ByteCode.INVOKEVIRTUAL,
+                            "org/mozilla/javascript/NewLiteralStorage",
+                            methodName,
+                            "(Ljava/lang/Object;)V"); // Stack: [store]
+                }
 
                 child = child.getNext();
             }
+        }
 
-            cfw.add(ByteCode.SWAP); // Caller expect to have [keys, values]
+        // stack: [store]
+    }
+
+    private static String getStoreMethodNameForLiteralProperty(Node child) {
+        switch (child.getType()) {
+            case Token.GET:
+                return "pushGetter";
+            case Token.SET:
+                return "pushSetter";
+            default:
+                return "pushValue";
         }
     }
 
@@ -2395,39 +2456,26 @@ class BodyCodegen {
 
         addLoadProperty(node, child, properties, count);
 
-        // check if object literal actually has any getters or setters
-        boolean hasGetterSetters = false;
-        Node child2 = child;
-        for (int i = 0; i != count; ++i) {
-            int childType = child2.getType();
-            if (childType == Token.GET || childType == Token.SET) {
-                hasGetterSetters = true;
-                break;
-            }
-            child2 = child2.getNext();
-        }
-        // create getter/setter flag array
-        if (hasGetterSetters) {
-            cfw.addPush(count);
-            cfw.add(ByteCode.NEWARRAY, ByteCode.T_INT);
-            child2 = child;
-            for (int i = 0; i != count; ++i) {
-                cfw.add(ByteCode.DUP);
-                cfw.addPush(i);
-                int childType = child2.getType();
-                if (childType == Token.GET) {
-                    cfw.add(ByteCode.ICONST_M1);
-                } else if (childType == Token.SET) {
-                    cfw.add(ByteCode.ICONST_1);
-                } else {
-                    cfw.add(ByteCode.ICONST_0);
-                }
-                cfw.add(ByteCode.IASTORE);
-                child2 = child2.getNext();
-            }
-        } else {
-            cfw.add(ByteCode.ACONST_NULL);
-        }
+        // stack: [store]
+        cfw.add(ByteCode.DUP); // stack: [store, store]
+        cfw.addInvoke(
+                ByteCode.INVOKEVIRTUAL,
+                "org/mozilla/javascript/NewLiteralStorage",
+                "getKeys",
+                "()[Ljava/lang/Object;"); // stack: [store, keys]
+        cfw.add(ByteCode.SWAP); // stack: [keys, store]
+        cfw.add(ByteCode.DUP); // stack: [keys, store, store]
+        cfw.addInvoke(
+                ByteCode.INVOKEVIRTUAL,
+                "org/mozilla/javascript/NewLiteralStorage",
+                "getValues",
+                "()[Ljava/lang/Object;"); // stack: [keys, store, values]
+        cfw.add(ByteCode.SWAP); // stack: [keys, values, store]
+        cfw.addInvoke(
+                ByteCode.INVOKEVIRTUAL,
+                "org/mozilla/javascript/NewLiteralStorage",
+                "getGetterSetters",
+                "()[I"); // stack: [keys, values, getterSetters]
 
         cfw.addALoad(contextLocal);
         cfw.addALoad(variableObjectLocal);
@@ -2508,11 +2556,7 @@ class BodyCodegen {
 
         // result is null, so push undefined and jump to end
         cfw.add(ByteCode.POP);
-        cfw.add(
-                ByteCode.GETSTATIC,
-                "org/mozilla/javascript/Undefined",
-                "instance",
-                "Ljava/lang/Object;");
+        Codegen.pushUndefined(cfw);
         cfw.add(ByteCode.GOTO, afterLabel);
 
         // Make the call
@@ -2568,11 +2612,7 @@ class BodyCodegen {
 
             // If result is null, so return undefined and do nothing else
             cfw.add(ByteCode.POP);
-            cfw.add(
-                    ByteCode.GETSTATIC,
-                    "org/mozilla/javascript/Undefined",
-                    "instance",
-                    "Ljava/lang/Object;");
+            Codegen.pushUndefined(cfw);
             cfw.add(ByteCode.GOTO, afterLabel);
 
             cfw.markLabel(doCallLabel);
@@ -4342,11 +4382,7 @@ class BodyCodegen {
             cfw.add(ByteCode.IFEQ, getExpr);
 
             cfw.add(ByteCode.POP);
-            cfw.add(
-                    ByteCode.GETSTATIC,
-                    "org/mozilla/javascript/Undefined",
-                    "instance",
-                    "Ljava/lang/Object;");
+            Codegen.pushUndefined(cfw);
             cfw.add(ByteCode.GOTO, after);
 
             cfw.markLabel(getExpr);

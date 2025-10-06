@@ -78,7 +78,11 @@ public class AbstractEcmaObjectOperations {
 
         if (obj.isExtensible()) return false;
 
-        for (Object name : obj.getIds(true, true)) {
+        Object[] ids;
+        try (var map = obj.startCompoundOp(false)) {
+            ids = obj.getIds(map, true, true);
+        }
+        for (Object name : ids) {
             ScriptableObject desc = obj.getOwnPropertyDescriptor(cx, name);
             if (Boolean.TRUE.equals(desc.get("configurable"))) return false;
 
@@ -141,7 +145,11 @@ public class AbstractEcmaObjectOperations {
             return false;
         }
 
-        for (Object key : obj.getIds(true, true)) {
+        Object[] ids;
+        try (var map = obj.startCompoundOp(false)) {
+            ids = obj.getIds(map, true, true);
+        }
+        for (Object key : ids) {
             ScriptableObject desc = obj.getOwnPropertyDescriptor(cx, key);
 
             if (level == INTEGRITY_LEVEL.SEALED) {
@@ -246,6 +254,25 @@ public class AbstractEcmaObjectOperations {
             o.put(p, o, v);
         } else {
             base.put(p, o, v);
+        }
+    }
+
+    /**
+     * Set ( O, P, V, Throw)
+     *
+     * <p><a href="https://262.ecma-international.org/12.0/#sec-set-o-p-v-throw">7.3.4 Set (O, P, V,
+     * Throw)</a>
+     */
+    static void put(Context cx, Scriptable o, Symbol p, Object v, boolean isThrow) {
+        Scriptable base = ScriptableObject.getBase(o, p);
+        if (base == null) base = o;
+
+        if (base instanceof ScriptableObject) {
+            if (((ScriptableObject) base).putOwnProperty(p, o, v, isThrow)) return;
+
+            ScriptableObject.ensureSymbolScriptable(o).put(p, o, v);
+        } else {
+            ScriptableObject.ensureSymbolScriptable(base).put(p, o, v);
         }
     }
 
@@ -491,7 +518,7 @@ public class AbstractEcmaObjectOperations {
      * <p><a href="https://262.ecma-international.org/12.0/#sec-isconstructor">7.2.4 IsConstructor
      * (argument)</a>
      */
-    static boolean isConstructor(Context cx, Object argument) {
+    public static boolean isConstructor(Context cx, Object argument) {
         /*
            The abstract operation IsConstructor takes argument argument (an ECMAScript language value).
            It determines if argument is a function object with a [[Construct]] internal method.

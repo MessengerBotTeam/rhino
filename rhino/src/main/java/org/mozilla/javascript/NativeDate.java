@@ -24,6 +24,7 @@ import java.util.Locale;
  *     <a href="https://dxr.mozilla.org/mozilla-central/source/js/src/jsdate.cpp">jsdate.cpp</a>
  */
 @SuppressWarnings("AndroidJdkLibsChecker")
+// java.time.format API added in API level 26
 final class NativeDate extends IdScriptableObject {
     private static final long serialVersionUID = -8307438915861678966L;
 
@@ -993,12 +994,11 @@ final class NativeDate extends IdScriptableObject {
                     if (c < '0' || c > '9') {
                         break;
                     }
-
-                    // skip more digits
                     if (digitsFound < 3) {
                         value = 10 * value + (c - '0');
                         digitsFound++;
                     }
+                    // Simply ignore any digits beyond the first 3
                 }
                 if (digitsFound == 0) {
                     state = ERROR;

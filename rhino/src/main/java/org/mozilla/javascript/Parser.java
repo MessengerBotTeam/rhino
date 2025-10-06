@@ -14,6 +14,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.mozilla.javascript.ast.AbstractObjectProperty;
 import org.mozilla.javascript.ast.ArrayComprehension;
 import org.mozilla.javascript.ast.ArrayComprehensionLoop;
 import org.mozilla.javascript.ast.ArrayLiteral;
@@ -62,6 +63,8 @@ import org.mozilla.javascript.ast.RegExpLiteral;
 import org.mozilla.javascript.ast.ReturnStatement;
 import org.mozilla.javascript.ast.Scope;
 import org.mozilla.javascript.ast.ScriptNode;
+import org.mozilla.javascript.ast.Spread;
+import org.mozilla.javascript.ast.SpreadObjectProperty;
 import org.mozilla.javascript.ast.StringLiteral;
 import org.mozilla.javascript.ast.SwitchCase;
 import org.mozilla.javascript.ast.SwitchStatement;
@@ -147,6 +150,7 @@ public class Parser {
     private Map<String, LabeledStatement> labelSet;
     private List<Loop> loopSet;
     private List<Jump> loopAndSwitchSet;
+    private boolean hasUndefinedBeenRedefined = false;
     // end of per function variables
 
     // Lacking 2-token lookahead, labels become a problem.
@@ -158,8 +162,6 @@ public class Parser {
     private int prevNameTokenColumn;
     private int lastTokenLineno = -1;
     private int lastTokenColumn = -1;
-
-    private boolean defaultUseStrictDirective;
 
     // Exception to unwind
     public static class ParserException extends RuntimeException {
@@ -603,7 +605,7 @@ public class Parser {
         boolean inDirectivePrologue = true;
         boolean savedStrictMode = inUseStrictDirective;
 
-        inUseStrictDirective = defaultUseStrictDirective;
+        inUseStrictDirective = compilerEnv.isStrictMode();
         if (inUseStrictDirective) {
             root.setInStrictMode(true);
         }
@@ -862,7 +864,9 @@ public class Parser {
                         restStartColumn = columnNumber();
                     }
 
-                    if (mustMatchToken(Token.NAME, "msg.no.parm", true)) {
+                    if (matchToken(Token.UNDEFINED, true)
+                            || mustMatchToken(Token.NAME, "msg.no.parm", true)) {
+
                         if (!wasRest && fnNode.hasRestParameter()) {
                             // Error: parameter after rest parameter
                             reportError(
@@ -943,7 +947,7 @@ public class Parser {
         AstNode memberExprNode = null;
 
         do {
-            if (matchToken(Token.NAME, true)) {
+            if (matchToken(Token.NAME, true) || matchToken(Token.UNDEFINED, true)) {
                 name = createNameNode(true, Token.NAME);
                 if (inUseStrictDirective) {
                     String id = name.getIdentifier();
@@ -1798,6 +1802,8 @@ public class Parser {
             consumeToken();
             peek = peekToken();
         }
+
+        boolean previous = hasUndefinedBeenRedefined;
         if (peek == Token.CATCH) {
             while (matchToken(Token.CATCH, true)) {
                 int catchLineNum = lineNumber();
@@ -1818,7 +1824,9 @@ public class Parser {
                         {
                             matchToken(Token.LP, true);
                             lp = ts.tokenBeg;
-                            mustMatchToken(Token.NAME, "msg.bad.catchcond", true);
+                            if (!matchToken(Token.UNDEFINED, true)) {
+                                mustMatchToken(Token.NAME, "msg.bad.catchcond", true);
+                            }
 
                             varName = createNameNode();
                             Comment jsdocNodeForName = getAndResetJsDoc();
@@ -1826,6 +1834,9 @@ public class Parser {
                                 varName.setJsDocNode(jsdocNodeForName);
                             }
                             String varNameString = varName.getIdentifier();
+                            if ("undefined".equals(varNameString)) {
+                                hasUndefinedBeenRedefined = true;
+                            }
                             if (inUseStrictDirective) {
                                 if ("eval".equals(varNameString)
                                         || "arguments".equals(varNameString)) {
@@ -1865,6 +1876,7 @@ public class Parser {
                 try {
                     statements(catchScope);
                 } finally {
+                    hasUndefinedBeenRedefined = previous;
                     popScope();
                 }
 
@@ -2033,13 +2045,22 @@ public class Parser {
         if (mustMatchToken(Token.RP, "msg.no.paren.after.with", true)) rp = ts.tokenBeg;
 
         WithStatement pn = new WithStatement(pos);
-        AstNode body = getNextStatementAfterInlineComments(pn);
-        pn.setLength(getNodeEnd(body) - pos);
-        pn.setJsDocNode(withComment);
-        pn.setExpression(obj);
-        pn.setStatement(body);
-        pn.setParens(lp, rp);
-        pn.setLineColumnNumber(lineno, column);
+
+        boolean previous = hasUndefinedBeenRedefined;
+        try {
+            hasUndefinedBeenRedefined = true;
+            AstNode body = getNextStatementAfterInlineComments(pn);
+
+            pn.setLength(getNodeEnd(body) - pos);
+            pn.setJsDocNode(withComment);
+            pn.setExpression(obj);
+            pn.setStatement(body);
+            pn.setParens(lp, rp);
+            pn.setLineColumnNumber(lineno, column);
+        } finally {
+            hasUndefinedBeenRedefined = previous;
+        }
+
         return pn;
     }
 
@@ -2315,7 +2336,11 @@ public class Parser {
                 markDestructuring(destructuring);
             } else {
                 // Simple variable name
-                mustMatchToken(Token.NAME, "msg.bad.var", true);
+                if (tt == Token.UNDEFINED) {
+                    consumeToken();
+                } else {
+                    mustMatchToken(Token.NAME, "msg.bad.var", true);
+                }
                 name = createNameNode();
                 name.setLineColumnNumber(lineNumber(), columnNumber());
                 if (inUseStrictDirective) {
@@ -2409,6 +2434,8 @@ public class Parser {
                 return;
             }
             codeBug();
+        } else if ("undefined".equals(name)) {
+            hasUndefinedBeenRedefined = true;
         }
         Scope definingScope = currentScope.getDefiningScope(name);
         Symbol symbol = definingScope != null ? definingScope.getSymbol(name) : null;
@@ -3087,23 +3114,6 @@ public class Parser {
             memberTypeFlags = Node.DESCENDANTS_FLAG;
         }
 
-        if (!compilerEnv.isXmlAvailable()) {
-            int maybeName = nextToken();
-            if (maybeName != Token.NAME
-                    && !(compilerEnv.isReservedKeywordAsIdentifier()
-                            && TokenStream.isKeyword(
-                                    ts.getString(),
-                                    compilerEnv.getLanguageVersion(),
-                                    inUseStrictDirective))) {
-                reportError("msg.no.name.after.dot");
-            }
-
-            Name name = createNameNode(true, Token.GETPROP);
-            PropertyGet pg = new PropertyGet(pn, name, dotPos);
-            pg.setLineColumnNumber(lineno, column);
-            return pg;
-        }
-
         AstNode ref = null; // right side of . or .. operator
         int token = nextToken();
         switch (token) {
@@ -3119,16 +3129,26 @@ public class Parser {
                 break;
 
             case Token.MUL:
-                // handles: *, *::name, *::*, *::[expr]
-                saveNameTokenData(ts.tokenBeg, "*", lineNumber(), columnNumber());
-                ref = propertyName(-1, memberTypeFlags);
-                break;
+                if (compilerEnv.isXmlAvailable()) {
+                    // handles: *, *::name, *::*, *::[expr]
+                    saveNameTokenData(ts.tokenBeg, "*", lineNumber(), columnNumber());
+                    ref = propertyName(-1, memberTypeFlags);
+                    break;
+                } else {
+                    reportError("msg.no.name.after.dot");
+                    return makeErrorNode();
+                }
 
             case Token.XMLATTR:
-                // handles: '@attr', '@ns::attr', '@ns::*', '@ns::*',
-                //          '@::attr', '@::*', '@*', '@*::attr', '@*::*'
-                ref = attributeAccess();
-                break;
+                if (compilerEnv.isXmlAvailable()) {
+                    // handles: '@attr', '@ns::attr', '@ns::*', '@ns::*',
+                    //          '@::attr', '@::*', '@*', '@*::attr', '@*::*'
+                    ref = attributeAccess();
+                    break;
+                } else {
+                    reportError("msg.no.name.after.dot");
+                    return makeErrorNode();
+                }
 
             case Token.RESERVED:
                 {
@@ -3385,6 +3405,20 @@ public class Parser {
                 re.setFlags(ts.readAndClearRegExpFlags());
                 re.setLineColumnNumber(lineNumber(), columnNumber());
                 return re;
+
+            case Token.UNDEFINED:
+                {
+                    consumeToken();
+                    pos = ts.tokenBeg;
+                    end = ts.tokenEnd;
+                    if (hasUndefinedBeenRedefined) {
+                        return new Name(pos, end - pos, "undefined");
+                    }
+
+                    KeywordLiteral keywordLiteral = new KeywordLiteral(pos, end - pos, tt);
+                    keywordLiteral.setLineColumnNumber(lineNumber(), columnNumber());
+                    return keywordLiteral;
+                }
 
             case Token.NULL:
             case Token.THIS:
@@ -3759,7 +3793,7 @@ public class Parser {
     private ObjectLiteral objectLiteral() throws IOException {
         int pos = ts.tokenBeg, lineno = lineNumber(), column = columnNumber();
         int afterComma = -1;
-        List<ObjectProperty> elems = new ArrayList<>();
+        List<AbstractObjectProperty> elems = new ArrayList<>();
         Set<String> getterNames = null;
         Set<String> setterNames = null;
         if (this.inUseStrictDirective) {
@@ -3785,6 +3819,16 @@ public class Parser {
             AstNode pname = objliteralProperty();
             if (pname == null) {
                 reportError("msg.bad.prop");
+            } else if (pname instanceof Spread) {
+                AstNode spreadExpr = ((Spread) pname).getExpression();
+                if (spreadExpr instanceof Name || spreadExpr instanceof StringLiteral) {
+                    // For complicated reasons, parsing a name does not advance the token
+                    spreadExpr.setLineColumnNumber(lineNumber(), columnNumber());
+                }
+
+                SpreadObjectProperty spreadObjectProperty =
+                        new SpreadObjectProperty((Spread) pname);
+                elems.add(spreadObjectProperty);
             } else {
                 propertyName = ts.getString();
                 int ppos = ts.tokenBeg;
@@ -3842,13 +3886,14 @@ public class Parser {
                         propertyName = null;
                     } else {
                         propertyName = ts.getString();
-                        // short-hand method definition
+                        // shorthand method definition
                         ObjectProperty objectProp =
                                 methodDefinition(
                                         ppos,
                                         pname,
                                         entryKind,
-                                        pname instanceof GeneratorMethodDefinition);
+                                        pname instanceof GeneratorMethodDefinition,
+                                        true);
                         pname.setJsDocNode(jsdocNode);
                         elems.add(objectProp);
                     }
@@ -3863,7 +3908,8 @@ public class Parser {
 
             if (this.inUseStrictDirective
                     && propertyName != null
-                    && !(pname instanceof ComputedPropertyKey)) {
+                    && !(pname instanceof ComputedPropertyKey)
+                    && compilerEnv.getLanguageVersion() < Context.VERSION_ES6) {
                 switch (entryKind) {
                     case PROP_ENTRY:
                     case METHOD_ENTRY:
@@ -3927,6 +3973,23 @@ public class Parser {
             case Token.NUMBER:
             case Token.BIGINT:
                 pname = createNumericLiteral(tt, true);
+                break;
+
+            case Token.DOTDOTDOT:
+                if (compilerEnv.getLanguageVersion() >= Context.VERSION_ES6) {
+                    int pos = ts.tokenBeg;
+                    nextToken();
+                    int lineno = lineNumber();
+                    int column = columnNumber();
+
+                    AstNode exprNode = assignExpr();
+                    pname = new Spread(pos, ts.tokenEnd - pos);
+                    pname.setLineColumnNumber(lineno, column);
+                    ((Spread) pname).setExpression(exprNode);
+                } else {
+                    reportError("msg.bad.prop");
+                    return null;
+                }
                 break;
 
             case Token.LB:
@@ -3995,8 +4058,7 @@ public class Parser {
             }
             AstNode nn = new Name(property.getPosition(), property.getString());
             ObjectProperty pn = new ObjectProperty();
-            pn.setIsShorthand(true);
-            pn.setLeftAndRight(property, nn);
+            pn.setKeyAndValue(property, nn);
             return pn;
         } else if (tt == Token.ASSIGN) {
             /* we're in destructuring with defaults in a object literal; treat defaults as values */
@@ -4004,18 +4066,18 @@ public class Parser {
             consumeToken(); // consume the `=`
             Assignment defaultValue = new Assignment(property, assignExpr());
             defaultValue.setType(Token.ASSIGN);
-            pn.setLeftAndRight(property, defaultValue);
+            pn.setKeyAndValue(property, defaultValue);
             return pn;
         }
         mustMatchToken(Token.COLON, "msg.no.colon.prop", true);
         ObjectProperty pn = new ObjectProperty();
-        pn.setOperatorPosition(ts.tokenBeg);
-        pn.setLeftAndRight(property, assignExpr());
+        pn.setKeyAndValue(property, assignExpr());
         return pn;
     }
 
     private ObjectProperty methodDefinition(
-            int pos, AstNode propName, int entryKind, boolean isGenerator) throws IOException {
+            int pos, AstNode propName, int entryKind, boolean isGenerator, boolean isShorthand)
+            throws IOException {
         FunctionNode fn = function(FunctionNode.FUNCTION_EXPRESSION, true);
         // We've already parsed the function name, so fn should be anonymous.
         Name name = fn.getFunctionName();
@@ -4038,11 +4100,13 @@ public class Parser {
                 if (isGenerator) {
                     fn.setIsES6Generator();
                 }
+                if (isShorthand) {
+                    fn.setIsShorthand();
+                }
                 break;
         }
         int end = getNodeEnd(fn);
-        pn.setLeft(propName);
-        pn.setRight(fn);
+        pn.setKeyAndValue(propName, fn);
         pn.setLength(end - pos);
         return pn;
     }
@@ -4322,6 +4386,7 @@ public class Parser {
         private Map<String, LabeledStatement> savedLabelSet;
         private List<Loop> savedLoopSet;
         private List<Jump> savedLoopAndSwitchSet;
+        private boolean savedHasUndefinedBeenRedefined;
 
         PerFunctionVariables(FunctionNode fnNode) {
             savedCurrentScriptOrFn = Parser.this.currentScriptOrFn;
@@ -4344,6 +4409,9 @@ public class Parser {
 
             savedInForInit = Parser.this.inForInit;
             Parser.this.inForInit = false;
+
+            savedHasUndefinedBeenRedefined = Parser.this.hasUndefinedBeenRedefined;
+            // we want to inherit the current value
         }
 
         void restore() {
@@ -4354,6 +4422,7 @@ public class Parser {
             Parser.this.loopAndSwitchSet = savedLoopAndSwitchSet;
             Parser.this.endFlags = savedEndFlags;
             Parser.this.inForInit = savedInForInit;
+            Parser.this.hasUndefinedBeenRedefined = savedHasUndefinedBeenRedefined;
         }
     }
 
@@ -4530,14 +4599,20 @@ public class Parser {
             Node cond_inner =
                     new Node(
                             Token.HOOK,
-                            new Node(Token.SHEQ, createName("undefined"), rightElem),
+                            new Node(
+                                    Token.SHEQ,
+                                    new KeywordLiteral().setType(Token.UNDEFINED),
+                                    rightElem),
                             right,
                             rightElem);
 
             Node cond =
                     new Node(
                             Token.HOOK,
-                            new Node(Token.SHEQ, createName("undefined"), createName(name)),
+                            new Node(
+                                    Token.SHEQ,
+                                    new KeywordLiteral().setType(Token.UNDEFINED),
+                                    createName(name)),
                             cond_inner,
                             left);
 
@@ -4588,10 +4663,12 @@ public class Parser {
             Node defaultRvalue =
                     transformer != null ? transformer.transform(defaultValue) : defaultValue;
 
+            Node undefined = new KeywordLiteral().setType(Token.UNDEFINED);
+
             Node cond_default =
                     new Node(
                             Token.HOOK,
-                            new Node(Token.SHEQ, createName(tempName), createName("undefined")),
+                            new Node(Token.SHEQ, createName(tempName), undefined),
                             defaultRvalue,
                             createName(tempName));
 
@@ -4617,7 +4694,10 @@ public class Parser {
         int setOp = variableType == Token.CONST ? Token.SETCONST : Token.SETNAME;
         boolean defaultValuesSetup = false;
 
-        for (ObjectProperty prop : node.getElements()) {
+        for (AbstractObjectProperty abstractProp : node.getElements()) {
+            if (abstractProp instanceof SpreadObjectProperty) throw Kit.codeBug();
+            ObjectProperty prop = (ObjectProperty) abstractProp;
+
             int lineno = 0, column = 0;
             // This function is sometimes called from the IRFactory
             // when executing regression tests, and in those cases the
@@ -4626,7 +4706,7 @@ public class Parser {
                 lineno = lineNumber();
                 column = columnNumber();
             }
-            AstNode id = prop.getLeft();
+            AstNode id = prop.getKey();
 
             Node rightElem = null;
             if (id instanceof Name) {
@@ -4651,7 +4731,7 @@ public class Parser {
                 defaultValuesSetup = true;
             }
 
-            AstNode value = prop.getRight();
+            AstNode value = prop.getValue();
             if (value.getType() == Token.NAME) {
                 String name = ((Name) value).getIdentifier();
                 parent.addChildToBack(
@@ -4743,6 +4823,10 @@ public class Parser {
     protected Node simpleAssignment(Node left, Node right, Transformer transformer) {
         int nodeType = left.getType();
         switch (nodeType) {
+            case Token.UNDEFINED:
+                left = Node.newString(Token.BINDNAME, "undefined");
+                return new Node(Token.SETNAME, left, right);
+
             case Token.NAME:
                 String name = ((Name) left).getIdentifier();
                 if (inUseStrictDirective && ("eval".equals(name) || "arguments".equals(name))) {
@@ -4832,10 +4916,6 @@ public class Parser {
                         + ts.tokenBeg
                         + ", currentToken="
                         + currentToken);
-    }
-
-    public void setDefaultUseStrictDirective(boolean useStrict) {
-        defaultUseStrictDirective = useStrict;
     }
 
     public boolean inUseStrictDirective() {

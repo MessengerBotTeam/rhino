@@ -8,6 +8,7 @@ package org.mozilla.javascript;
 
 import java.io.Serializable;
 import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.MathContext;
@@ -22,6 +23,7 @@ import java.util.ServiceLoader;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import org.mozilla.javascript.ast.FunctionNode;
+import org.mozilla.javascript.lc.type.impl.factory.ConcurrentFactory;
 import org.mozilla.javascript.typedarrays.NativeArrayBuffer;
 import org.mozilla.javascript.typedarrays.NativeBigInt64Array;
 import org.mozilla.javascript.typedarrays.NativeBigUint64Array;
@@ -85,6 +87,13 @@ public class ScriptRuntime {
             cx.typeErrorThrower = thrower;
         }
         return cx.typeErrorThrower;
+    }
+
+    public static Object concat(Object lhs, Object rhs) {
+        String rhsString = ScriptRuntime.toString(rhs);
+        String lhsString = ScriptRuntime.toString(lhs);
+
+        return new ConsString(lhsString, rhsString);
     }
 
     static class NoSuchMethodShim implements Callable {
@@ -167,11 +176,10 @@ public class ScriptRuntime {
 
         scope.associateValue(LIBRARY_SCOPE_KEY, scope);
         new ClassCache().associate(scope);
+        new ConcurrentFactory().associate(scope);
 
         LambdaConstructor function = BaseFunction.init(cx, scope, sealed);
-        LambdaConstructor obj = NativeObject.init(scope, sealed);
-
-        Scriptable objectProto = obj.getPrototype();
+        LambdaConstructor obj = NativeObject.init(cx, scope, sealed);
 
         ScriptableObject objectPrototype = (ScriptableObject) obj.getPrototypeProperty();
         ScriptableObject functionPrototype = (ScriptableObject) function.getPrototypeProperty();
@@ -212,9 +220,6 @@ public class ScriptRuntime {
         NativeStringIterator.init(scope, sealed);
         registerRegExp(cx, scope, sealed);
 
-        NativeJavaObject.init(scope, sealed);
-        NativeJavaMap.init(scope, sealed);
-
         // define lazy-loaded properties using their class name
         // Depends on the old reflection-based lazy loading mechanism
         // to property initialize the prototype.
@@ -241,7 +246,6 @@ public class ScriptRuntime {
             new LazilyLoadedCtor(scope, "Uint32Array", sealed, true, NativeUint32Array::init);
             new LazilyLoadedCtor(scope, "BigInt64Array", sealed, true, NativeBigInt64Array::init);
             new LazilyLoadedCtor(scope, "BigUint64Array", sealed, true, NativeBigUint64Array::init);
-            new LazilyLoadedCtor(scope, "Uint32Array", sealed, true, NativeUint32Array::init);
             new LazilyLoadedCtor(scope, "Float32Array", sealed, true, NativeFloat32Array::init);
             new LazilyLoadedCtor(scope, "Float64Array", sealed, true, NativeFloat64Array::init);
             new LazilyLoadedCtor(scope, "DataView", sealed, true, NativeDataView::init);
@@ -279,6 +283,9 @@ public class ScriptRuntime {
             Context cx, ScriptableObject scope, boolean sealed) {
         ScriptableObject s = initSafeStandardObjects(cx, scope, sealed);
 
+        NativeJavaObject.init(s, sealed);
+        NativeJavaMap.init(s, sealed);
+
         // These depend on the legacy initialization behavior of the lazy loading mechanism
         new LazilyLoadedCtor(
                 s, "Packages", "org.mozilla.javascript.NativeJavaTopPackage", sealed, true);
@@ -298,7 +305,7 @@ public class ScriptRuntime {
 
     static String[] getTopPackageNames() {
         // Include "android" top package if running on Android
-        return "Dalvik".equals(System.getProperty("java.vm.name"))
+        return androidApi > 0
                 ? new String[] {"java", "javax", "org", "com", "edu", "net", "android"}
                 : new String[] {"java", "javax", "org", "com", "edu", "net"};
     }
@@ -2145,7 +2152,7 @@ public class ScriptRuntime {
     }
 
     static boolean isSpecialProperty(String s) {
-        return s.equals("__proto__") || s.equals("__parent__");
+        return s.equals(NativeObject.PROTO_PROPERTY) || s.equals(NativeObject.PARENT_PROPERTY);
     }
 
     /**
@@ -3299,9 +3306,8 @@ public class ScriptRuntime {
     /**
      * Perform function call in reference context. Should always return value that can be passed to
      * {@link #refGet(Ref, Context)} or {@link #refSet(Ref, Object, Context)} arbitrary number of
-     * times. The args array reference should not be stored in any object that is can be
-     * GC-reachable after this method returns. If this is necessary, store args.clone(), not args
-     * array itself.
+     * times. The args array reference should not be stored in any object that can be GC-reachable
+     * after this method returns. If this is necessary, store args.clone(), not args array itself.
      */
     public static Ref callRef(Callable function, Scriptable thisObj, Object[] args, Context cx) {
         if (function instanceof RefCallable) {
@@ -3528,6 +3534,9 @@ public class ScriptRuntime {
         // mode.
         Consumer<CompilerEnvirons> compilerEnvironsProcessor =
                 compilerEnvs -> {
+                    // `eval` propagates strict mode
+                    compilerEnvs.setStrictMode(cx.isStrictMode());
+
                     // If we are inside a method, we need to allow super. Methods have the home
                     // object set and propagated via the activation (i.e. the NativeCall),
                     // but non-methods will have the home object set to null.
@@ -3772,6 +3781,8 @@ public class ScriptRuntime {
     }
 
     @SuppressWarnings("AndroidJdkLibsChecker")
+    // java.math.BigInteger#intValueExact() available in API-level 31
+    // https://developer.android.com/reference/java/math/BigInteger#intValueExact()
     public static Number exponentiate(Number val1, Number val2) {
         if (val1 instanceof BigInteger && val2 instanceof BigInteger) {
             if (((BigInteger) val2).signum() == -1) {
@@ -3792,6 +3803,10 @@ public class ScriptRuntime {
         }
     }
 
+    public static double bitwiseAND(double val1, double val2) {
+        return (double) (toInt32(val1) & toInt32(val2));
+    }
+
     public static Number bitwiseAND(Number val1, Number val2) {
         if (val1 instanceof BigInteger && val2 instanceof BigInteger) {
             return ((BigInteger) val1).and((BigInteger) val2);
@@ -3803,6 +3818,10 @@ public class ScriptRuntime {
             int result = toInt32(val1.doubleValue()) & toInt32(val2.doubleValue());
             return Double.valueOf(result);
         }
+    }
+
+    public static double bitwiseOR(double val1, double val2) {
+        return (double) (toInt32(val1) | toInt32(val2));
     }
 
     public static Number bitwiseOR(Number val1, Number val2) {
@@ -3818,6 +3837,10 @@ public class ScriptRuntime {
         }
     }
 
+    public static double bitwiseXOR(double val1, double val2) {
+        return (double) (toInt32(val1) ^ toInt32(val2));
+    }
+
     public static Number bitwiseXOR(Number val1, Number val2) {
         if (val1 instanceof BigInteger && val2 instanceof BigInteger) {
             return ((BigInteger) val1).xor((BigInteger) val2);
@@ -3831,7 +3854,13 @@ public class ScriptRuntime {
         }
     }
 
+    public static double leftShift(double val1, double val2) {
+        return (double) (toInt32(val1) << toInt32(val2));
+    }
+
     @SuppressWarnings("AndroidJdkLibsChecker")
+    // java.math.BigInteger#intValueExact() available in API-level 31
+    // https://developer.android.com/reference/java/math/BigInteger#intValueExact()
     public static Number leftShift(Number val1, Number val2) {
         if (val1 instanceof BigInteger && val2 instanceof BigInteger) {
             try {
@@ -3851,7 +3880,13 @@ public class ScriptRuntime {
         }
     }
 
+    public static double signedRightShift(double val1, double val2) {
+        return (double) (toInt32(val1) >> toInt32(val2));
+    }
+
     @SuppressWarnings("AndroidJdkLibsChecker")
+    // java.math.BigInteger#intValueExact() available in API-level 31
+    // https://developer.android.com/reference/java/math/BigInteger#intValueExact()
     public static Number signedRightShift(Number val1, Number val2) {
         if (val1 instanceof BigInteger && val2 instanceof BigInteger) {
             try {
@@ -4670,7 +4705,7 @@ public class ScriptRuntime {
         }
     }
 
-    private static boolean compareTo(double d1, double d2, int op) {
+    static boolean compareTo(double d1, double d2, int op) {
         switch (op) {
             case Token.GE:
                 return d1 >= d2;
@@ -5417,23 +5452,46 @@ public class ScriptRuntime {
                     StringIdOrIndex s = toStringIdOrIndex(id);
                     if (s.stringId == null) {
                         object.put(s.index, object, value);
-                    } else if (isSpecialProperty(s.stringId)) {
-                        Ref ref = specialRef(object, s.stringId, cx, scope);
-                        ref.set(cx, scope, value);
                     } else {
-                        object.put(s.stringId, object, value);
+                        String stringId = s.stringId;
+                        if (cx.getLanguageVersion() < Context.VERSION_ES6
+                                && isSpecialProperty(stringId)) {
+                            Ref ref = specialRef(object, stringId, cx, scope);
+                            ref.set(cx, scope, value);
+                        } else if (cx.getLanguageVersion() >= Context.VERSION_ES6
+                                && NativeObject.PROTO_PROPERTY.equals(stringId)) {
+                            if (value == null) {
+                                object.setPrototype(null);
+                            } else if (value instanceof NativeFunction) {
+                                if (((NativeFunction) value).isShorthand()) {
+                                    object.put(stringId, object, value);
+                                } else {
+                                    NativeObject.js_protoSetter(object, value);
+                                }
+                            } else if (value instanceof Scriptable) {
+                                NativeObject.js_protoSetter(object, value);
+                            }
+                        } else {
+                            object.put(stringId, object, value);
+                        }
                     }
                 }
             } else {
                 ScriptableObject so = (ScriptableObject) object;
                 Callable getterOrSetter = (Callable) value;
                 boolean isSetter = getterSetter == 1;
-                Integer index = id instanceof Integer ? (Integer) id : null;
-                Object key =
-                        index != null
-                                ? null
-                                : (id instanceof Symbol ? id : ScriptRuntime.toString(id));
-                so.setGetterOrSetter(key, index == null ? 0 : index, getterOrSetter, isSetter);
+                if (isSymbol(id)) {
+                    so.setGetterOrSetter(id, 0, getterOrSetter, isSetter);
+                } else if (id instanceof Integer && ((Integer) id) >= 0) {
+                    so.setGetterOrSetter(null, (Integer) id, getterOrSetter, isSetter);
+                } else {
+                    StringIdOrIndex s = toStringIdOrIndex(id);
+                    so.setGetterOrSetter(
+                            s.getStringId(),
+                            s.getIndex() == -1 ? 0 : s.getIndex(),
+                            getterOrSetter,
+                            isSetter);
+                }
             }
         }
     }
@@ -6087,9 +6145,27 @@ public class ScriptRuntime {
         }
     }
 
+    private static int detectAndroidApi() {
+
+        try {
+            Class<?> versionClass = Class.forName("android.os.Build$VERSION");
+            Field sdkInt = versionClass.getField("SDK_INT");
+            return sdkInt.getInt(null);
+        } catch (NoSuchFieldException | IllegalAccessException | ClassNotFoundException e) {
+            if ("Dalvik".equals(System.getProperty("java.vm.name"))) {
+                // Fall back to vm-name
+                return 1;
+            }
+        }
+        return -1;
+    }
+
     public static final Object[] emptyArgs = new Object[0];
     public static final String[] emptyStrings = new String[0];
 
     static final XMLLoader xmlLoaderImpl =
             ScriptRuntime.loadOneServiceImplementation(XMLLoader.class);
+
+    /** This value holds the current android API version (or -1) if not running on android */
+    static final int androidApi = detectAndroidApi();
 }

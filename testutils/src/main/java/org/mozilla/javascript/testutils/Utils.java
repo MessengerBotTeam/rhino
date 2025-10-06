@@ -63,8 +63,8 @@ public class Utils {
      * @param action the action to execute
      */
     public static void runWithAllModes(final ContextAction<?> action) {
-        runWithMode(action, false);
         runWithMode(action, true);
+        runWithMode(action, false);
     }
 
     /**
@@ -75,8 +75,8 @@ public class Utils {
      */
     public static void runWithAllModes(
             final ContextFactory contextFactory, final ContextAction<?> action) {
-        runWithMode(contextFactory, action, false);
         runWithMode(contextFactory, action, true);
+        runWithMode(contextFactory, action, false);
     }
 
     /**
@@ -240,7 +240,7 @@ public class Utils {
                         cx.setLanguageVersion(languageVersion);
                     }
                     final Scriptable scope = cx.initStandardObjects();
-                    final Object res = cx.evaluateString(scope, script, "test.js", 0, null);
+                    final Object res = cx.evaluateString(scope, script, "test.js", 1, null);
 
                     if (expected instanceof Integer && res instanceof Double) {
                         assertEquals(
@@ -277,7 +277,7 @@ public class Utils {
                 cx -> {
                     cx.setLanguageVersion(Context.VERSION_ES6);
                     Scriptable scope = cx.initStandardObjects(new TopLevel());
-                    final Object res = cx.evaluateString(scope, script, "test.js", 0, null);
+                    final Object res = cx.evaluateString(scope, script, "test.js", 1, null);
 
                     assertEquals(expected, res);
                     return null;
@@ -459,20 +459,36 @@ public class Utils {
      * @return a new {@link ContextFactory} with all provided features enabled
      */
     public static ContextFactory contextFactoryWithFeatures(int... features) {
-        return new ContextFactoryWithFeatures(features);
+        return new ContextFactoryWithFeatures(features, new int[0]);
+    }
+
+    /**
+     * Construct a new {@link ContextFactory}
+     *
+     * @param features the features to forcibly disable, overriding the default from {@link
+     *     ContextFactory}
+     * @return a new {@link ContextFactory} with all provided features disabled
+     */
+    public static ContextFactory contextFactoryWithFeatureDisabled(int... features) {
+        return new ContextFactoryWithFeatures(new int[0], features);
     }
 
     private static class ContextFactoryWithFeatures extends ContextFactory {
-        private final int[] features;
+        private final int[] enabledFeatures;
+        private final int[] disabledFeatures;
 
-        private ContextFactoryWithFeatures(int... features) {
-            this.features = features;
+        private ContextFactoryWithFeatures(int[] enabledFeatures, int[] disabledFeatures) {
+            this.enabledFeatures = enabledFeatures;
+            this.disabledFeatures = disabledFeatures;
         }
 
         @Override
         protected boolean hasFeature(Context cx, int featureIndex) {
-            if (IntStream.of(features).anyMatch(x -> x == featureIndex)) {
+            if (IntStream.of(enabledFeatures).anyMatch(x -> x == featureIndex)) {
                 return true;
+            }
+            if (IntStream.of(disabledFeatures).anyMatch(x -> x == featureIndex)) {
+                return false;
             }
 
             return super.hasFeature(cx, featureIndex);

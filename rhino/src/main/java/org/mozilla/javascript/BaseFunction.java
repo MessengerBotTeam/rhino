@@ -26,6 +26,7 @@ public class BaseFunction extends ScriptableObject implements Function {
 
     private static final String APPLY_TAG = "APPLY_TAG";
     private static final String CALL_TAG = "CALL_TAG";
+    private static final String PROTOTYPE_PROPERTY_NAME = "prototype";
 
     static LambdaConstructor init(Context cx, Scriptable scope, boolean sealed) {
         LambdaConstructor ctor =
@@ -120,12 +121,13 @@ public class BaseFunction extends ScriptableObject implements Function {
         var proto = new NativeObject();
 
         var function = (Scriptable) ScriptableObject.getProperty(scope, FUNCTION_CLASS);
-        var functionProto = (Scriptable) ScriptableObject.getProperty(function, "prototype");
+        var functionProto =
+                (Scriptable) ScriptableObject.getProperty(function, PROTOTYPE_PROPERTY_NAME);
         proto.setPrototype(functionProto);
 
         var iterator = (Scriptable) ScriptableObject.getProperty(scope, "Iterator");
-        var iteratorPrototype = ScriptableObject.getProperty(iterator, "prototype");
-        ScriptableObject.putProperty(proto, "prototype", iteratorPrototype);
+        var iteratorPrototype = ScriptableObject.getProperty(iterator, PROTOTYPE_PROPERTY_NAME);
+        ScriptableObject.putProperty(proto, PROTOTYPE_PROPERTY_NAME, iteratorPrototype);
 
         LambdaConstructor ctor =
                 new LambdaConstructor(
@@ -224,16 +226,37 @@ public class BaseFunction extends ScriptableObject implements Function {
         return true;
     }
 
+    /** Forces setting the function's name, bypassing all "readonly" checks. */
+    void setFunctionName(String name) {
+        nameValue = name;
+    }
+
     protected void createPrototypeProperty() {
-        if (!has("prototype", this)) {
-            ScriptableObject.defineBuiltInProperty(
-                    this,
-                    "prototype",
-                    prototypePropertyAttributes,
-                    BaseFunction::prototypeGetter,
-                    BaseFunction::prototypeSetter,
-                    BaseFunction::prototypeAttrSetter);
+        try (var map = startCompoundOp(true)) {
+            createPrototypeProperty(map);
         }
+    }
+
+    protected void createPrototypeProperty(CompoundOperationMap compoundOp) {
+        compoundOp.compute(
+                this,
+                compoundOp,
+                PROTOTYPE_PROPERTY_NAME,
+                0,
+                (k, i, s, m, o) -> {
+                    if (s == null) {
+                        return new BuiltInSlot<BaseFunction>(
+                                PROTOTYPE_PROPERTY_NAME,
+                                0,
+                                prototypePropertyAttributes,
+                                this,
+                                BaseFunction::prototypeGetter,
+                                BaseFunction::prototypeSetter,
+                                BaseFunction::prototypeAttrSetter,
+                                BaseFunction::prototypeDescSetter);
+                    }
+                    return s;
+                });
     }
 
     private static Object prototypeGetter(BaseFunction function, Scriptable start) {
@@ -246,12 +269,39 @@ public class BaseFunction extends ScriptableObject implements Function {
             Scriptable owner,
             Scriptable start,
             boolean isThrow) {
-        function.setPrototypeProperty(value == null ? UniqueTag.NULL_VALUE : value);
+        function.prototypeProperty = value == null ? UniqueTag.NULL_VALUE : value;
         return true;
     }
 
     private static void prototypeAttrSetter(BaseFunction function, int attributes) {
         function.prototypePropertyAttributes = attributes;
+    }
+
+    protected static boolean prototypeDescSetter(
+            BaseFunction builtIn,
+            BuiltInSlot<BaseFunction> current,
+            Object id,
+            ScriptableObject.DescriptorInfo info,
+            boolean checkValid,
+            Object key,
+            int index) {
+        try (var map = builtIn.startCompoundOp(true)) {
+            return ScriptableObject.defineOrdinaryProperty(
+                    (o, i, k, e, m, s) -> {
+                        if (i.value != NOT_FOUND) {
+                            builtIn.prototypeProperty =
+                                    i.value == null ? UniqueTag.NULL_VALUE : i.value;
+                        }
+                        return s;
+                    },
+                    builtIn,
+                    map,
+                    id,
+                    info,
+                    checkValid,
+                    key,
+                    index);
+        }
     }
 
     protected final boolean defaultHas(String name) {
@@ -306,7 +356,7 @@ public class BaseFunction extends ScriptableObject implements Function {
      */
     @Override
     public boolean hasInstance(Scriptable instance) {
-        Object protoProp = ScriptableObject.getProperty(this, "prototype");
+        Object protoProp = ScriptableObject.getProperty(this, PROTOTYPE_PROPERTY_NAME);
         if (protoProp instanceof Scriptable) {
             return ScriptRuntime.jsDelegatesTo(instance, (Scriptable) protoProp);
         }
@@ -340,7 +390,7 @@ public class BaseFunction extends ScriptableObject implements Function {
                     ((NativeFunction) ((BoundFunction) thisObj).getTargetFunction())
                             .getPrototypeProperty();
         else {
-            protoProp = ScriptableObject.getProperty(thisObj, "prototype");
+            protoProp = ScriptableObject.getProperty(thisObj, PROTOTYPE_PROPERTY_NAME);
         }
 
         if (ScriptRuntime.isObject(protoProp)) {
@@ -474,7 +524,7 @@ public class BaseFunction extends ScriptableObject implements Function {
         }
         prototypeProperty = (value != null) ? value : UniqueTag.NULL_VALUE;
         createPrototypeProperty();
-        setAttributes("prototype", DONTENUM | PERMANENT | READONLY);
+        setAttributes(PROTOTYPE_PROPERTY_NAME, DONTENUM | PERMANENT | READONLY);
     }
 
     protected Scriptable getClassPrototype() {
@@ -593,9 +643,9 @@ public class BaseFunction extends ScriptableObject implements Function {
         prototypePropertyAttributes = attributes;
         getMap().compute(
                         this,
-                        "prototype",
+                        PROTOTYPE_PROPERTY_NAME,
                         0,
-                        (k, i, s) -> {
+                        (k, i, s, m, o) -> {
                             if (s != null) {
                                 s.setAttributes(attributes);
                             }
@@ -628,7 +678,7 @@ public class BaseFunction extends ScriptableObject implements Function {
     }
 
     protected synchronized Object setupDefaultPrototype(Scriptable scope) {
-        if (!has("prototyoe", this)) {
+        if (!has(PROTOTYPE_PROPERTY_NAME, this)) {
             createPrototypeProperty();
         }
         NativeObject obj = new NativeObject();

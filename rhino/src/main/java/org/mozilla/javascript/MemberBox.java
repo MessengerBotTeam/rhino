@@ -10,6 +10,8 @@ import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.io.Serializable;
+import java.lang.reflect.AccessibleObject;
+import java.lang.reflect.Array;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Member;
@@ -29,9 +31,9 @@ final class MemberBox implements Serializable {
     private static final long serialVersionUID = 6358550398665688245L;
 
     private transient Member memberObject;
-    private transient volatile List<TypeInfo> argTypeInfos;
-    private transient volatile TypeInfo returnTypeInfo;
-    transient boolean[] argNullability;
+    private transient List<TypeInfo> argTypeInfos;
+    private transient TypeInfo returnTypeInfo;
+    private transient NullabilityDetector.NullabilityAccessor argNullability;
     transient boolean vararg;
 
     transient Function asGetterFunction;
@@ -51,10 +53,9 @@ final class MemberBox implements Serializable {
 
     private void init(Method method, TypeInfoFactory factory) {
         this.memberObject = method;
-        this.argNullability =
-                nullDetector == null
-                        ? new boolean[method.getParameters().length]
-                        : nullDetector.getParameterNullability(method);
+        if (nullDetector == null) {
+            this.argNullability = NullabilityDetector.NullabilityAccessor.FALSE;
+        }
         this.vararg = method.isVarArgs();
         this.argTypeInfos = factory.createList(method.getGenericParameterTypes());
         this.returnTypeInfo = factory.create(method.getGenericReturnType());
@@ -62,10 +63,9 @@ final class MemberBox implements Serializable {
 
     private void init(Constructor<?> constructor, TypeInfoFactory factory) {
         this.memberObject = constructor;
-        this.argNullability =
-                nullDetector == null
-                        ? new boolean[constructor.getParameters().length]
-                        : nullDetector.getParameterNullability(constructor);
+        if (nullDetector == null) {
+            this.argNullability = NullabilityDetector.NullabilityAccessor.FALSE;
+        }
         this.vararg = constructor.isVarArgs();
         this.argTypeInfos = factory.createList(constructor.getGenericParameterTypes());
         this.returnTypeInfo = TypeInfo.NONE;
@@ -109,6 +109,21 @@ final class MemberBox implements Serializable {
 
     List<TypeInfo> getArgTypes() {
         return argTypeInfos;
+    }
+
+    public NullabilityDetector.NullabilityAccessor getArgNullability() {
+        var got = this.argNullability;
+        if (got == null) {
+            // synchronization is optional, because `getParameterNullability(...)` will always
+            // give `NullabilityAccessor` with same behaviour, which is because arg nullability
+            // for a certain method/constructor will not change at runtime
+            got =
+                    this.isMethod()
+                            ? nullDetector.getParameterNullability(this.method())
+                            : nullDetector.getParameterNullability(this.ctor());
+            this.argNullability = got;
+        }
+        return got;
     }
 
     TypeInfo getReturnType() {
@@ -210,7 +225,7 @@ final class MemberBox implements Serializable {
                                                     thisObj,
                                                     originalArgs[0],
                                                     nativeSetter.getArgTypes().get(0).getTypeTag(),
-                                                    nativeSetter.argNullability[0])
+                                                    nativeSetter.getArgNullability().isNullable(0))
                                             : Undefined.instance;
                             if (nativeSetter.delegateTo == null) {
                                 setterThis = thisObj;
@@ -260,7 +275,7 @@ final class MemberBox implements Serializable {
                     memberObject = accessible;
                     method = accessible;
                 } else {
-                    if (!VMBridge.instance.tryToMakeAccessible(method)) {
+                    if (!tryToMakeAccessible(method)) {
                         throw Context.throwAsScriptRuntimeEx(ex);
                     }
                 }
@@ -286,7 +301,7 @@ final class MemberBox implements Serializable {
             try {
                 return ctor.newInstance(args);
             } catch (IllegalAccessException ex) {
-                if (!VMBridge.instance.tryToMakeAccessible(ctor)) {
+                if (!tryToMakeAccessible(ctor)) {
                     throw Context.throwAsScriptRuntimeEx(ex);
                 }
             }
@@ -294,6 +309,78 @@ final class MemberBox implements Serializable {
         } catch (Exception ex) {
             throw Context.throwAsScriptRuntimeEx(ex);
         }
+    }
+
+    Object[] wrapArgsInternal(Object[] args) {
+        var argTypes = getArgTypes();
+        var argTypesLen = argTypes.size();
+        var argLen = args.length;
+
+        if (!this.vararg) {
+            // fast path for common cases
+            if (argLen == 0) {
+                return args;
+            } else if (argLen == 1) {
+                var arg = args[0];
+                var wrapped = Context.jsToJava(args[0], argTypes.get(0));
+                return wrapped == arg ? args : new Object[] {wrapped};
+            }
+
+            var wrappedArgs = args;
+            for (int i = 0; i < argLen; i++) {
+                var arg = args[i];
+                var coerced = Context.jsToJava(arg, argTypes.get(i));
+                if (coerced != arg) {
+                    if (wrappedArgs == args) {
+                        wrappedArgs = args.clone();
+                    }
+                    wrappedArgs[i] = coerced;
+                }
+            }
+            return wrappedArgs;
+        }
+
+        // marshall the explicit parameters
+        var wrappedArgs = new Object[argTypesLen];
+        for (int i = 0; i < argTypesLen - 1; i++) {
+            wrappedArgs[i] = Context.jsToJava(args[i], argTypes.get(i));
+        }
+
+        // Handle special situation where a single variable parameter
+        // is given, and it is a Java or ECMA array or is null.
+        if (argLen == argTypesLen) {
+            var lastArg = args[argLen - 1];
+            if (lastArg == null
+                    || lastArg instanceof NativeArray
+                    || lastArg instanceof NativeJavaArray) {
+                // convert the ECMA array into a native array
+                wrappedArgs[argLen - 1] = Context.jsToJava(lastArg, argTypes.get(argTypesLen - 1));
+                return wrappedArgs;
+            }
+        }
+
+        // marshall the variable parameters
+        var varArgs =
+                argTypes.get(argTypesLen - 1).getComponentType().newArray(argLen - argTypesLen + 1);
+        for (int i = 0, arrayLen = Array.getLength(varArgs); i < arrayLen; i++) {
+            Array.set(
+                    varArgs,
+                    i,
+                    Context.jsToJava(
+                            args[argTypesLen - 1 + i],
+                            argTypes.get(argTypesLen - 1).getComponentType()));
+        }
+        wrappedArgs[argTypesLen - 1] = varArgs;
+
+        return wrappedArgs;
+    }
+
+    @SuppressWarnings("deprecation")
+    private static boolean tryToMakeAccessible(AccessibleObject accessible) {
+        if (!accessible.isAccessible()) {
+            accessible.setAccessible(true);
+        }
+        return true;
     }
 
     private static Method searchAccessibleMethod(Method method, Class<?>[] params) {
